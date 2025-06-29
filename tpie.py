@@ -39,7 +39,7 @@ ALCHEMY_RPC = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}"
 BASE_RPC_ENDPOINTS = [
     PRIVATE_BASE_RPC,
     "https://base.blockscout.com",
-    "https://base-mainnet.public.blastapi.io"
+    "https://mainnet.base.org"
 ]
 
 # ===== VERIFIED CONTRACTS =====
@@ -91,13 +91,17 @@ def generate_stealth_account():
     return Account.from_key(stealth_key)
 
 # ===== CORE BLOCKCHAIN OPERATIONS =====
-def get_gas_price():
-    """Get current gas price with fallback"""
+def get_dynamic_gas():
+    """Get dynamic gas prices with proper priority fee structure"""
     try:
-        return w3.eth.gas_price
+        latest_block = w3.eth.get_block('latest')
+        base_fee = latest_block['baseFeePerGas']
+        priority_fee = w3.to_wei(1.5, 'gwei')
+        max_fee = base_fee + priority_fee
+        return max_fee, priority_fee
     except Exception as e:
         logging.warning(f"Gas price error: {str(e)}")
-        return w3.to_wei(20, 'gwei')  # Fallback value
+        return w3.to_wei(20, 'gwei'), w3.to_wei(1.5, 'gwei')
 
 def get_base_rpc():
     """Rotate through Base RPC endpoints with fallback"""
@@ -122,6 +126,8 @@ def get_base_rpc():
 
 def create_blob_transaction(blobs, operator):
     """Create properly formatted EIP-4844 blob transaction"""
+    max_fee, priority_fee = get_dynamic_gas()
+    
     # Convert to versioned hashes
     versioned_hashes = []
     for blob in blobs:
@@ -137,8 +143,8 @@ def create_blob_transaction(blobs, operator):
         'to': '0x0000000000000000000000000000000000000000',
         'value': 0,
         'gas': 250000,
-        'maxFeePerGas': get_gas_price(),
-        'maxPriorityFeePerGas': w3.to_wei(1.5, 'gwei'),
+        'maxFeePerGas': max_fee,
+        'maxPriorityFeePerGas': priority_fee,
         'maxFeePerBlobGas': w3.to_wei(1, 'gwei'),
         'blobVersionedHashes': versioned_hashes,
         'accessList': [],
@@ -153,7 +159,7 @@ def submit_blobs_direct(blobs, operator):
         signed_tx = operator.sign_transaction(tx)
         
         # Submit directly via RPC
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
         logging.info(f"Blobs submitted: {tx_hash}")
         return tx_hash
     except Exception as e:
@@ -168,19 +174,22 @@ def resell_to_base(commitments, operator):
     total_earned = 0
     for commitment in commitments:
         try:
+            # Convert hex string to bytes32
+            commitment_bytes = Web3.to_bytes(hexstr=commitment)
+            
             # Build transaction
-            tx = contract.functions.reserveBlobspace(commitment).build_transaction({
+            tx = contract.functions.reserveBlobspace(commitment_bytes).build_transaction({
                 'from': operator.address,
                 'nonce': base_w3.eth.get_transaction_count(operator.address),
                 'gas': 150000,
-                'maxFeePerGas': get_gas_price(),
+                'maxFeePerGas': get_dynamic_gas()[0],
                 'maxPriorityFeePerGas': w3.to_wei(1.5, 'gwei'),
                 'value': 0
             })
             
             # Sign and send transaction
             signed_tx = operator.sign_transaction(tx)
-            tx_hash = base_w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
+            tx_hash = base_w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
             logging.info(f"Commitment sold: {tx_hash}")
             
             # Wait for transaction receipt
@@ -192,6 +201,7 @@ def resell_to_base(commitments, operator):
                     if log.address.lower() == BASE_SEQUENCER_CONTRACT.lower():
                         transfer_amount = abi.decode(['uint256'], log.data)[0]
                         total_earned += transfer_amount
+                        logging.info(f"Earned: {transfer_amount / 10**18:.6f} ETH")
         except Exception as e:
             logging.error(f"Resell failed: {str(e)}")
     
@@ -205,18 +215,19 @@ def execute_stealth_transfer(operator, amount):
         logging.info(f"Preparing stealth transfer via {stealth_account.address}")
         
         # Step 1: Transfer to stealth address
+        max_fee, priority_fee = get_dynamic_gas()
         tx = {
             'to': stealth_account.address,
             'value': amount,
             'chainId': w3.eth.chain_id,
             'nonce': w3.eth.get_transaction_count(operator.address),
             'gas': 35000,
-            'maxFeePerGas': get_gas_price(),
-            'maxPriorityFeePerGas': w3.to_wei(1.5, 'gwei')
+            'maxFeePerGas': max_fee,
+            'maxPriorityFeePerGas': priority_fee
         }
         
         signed_tx = operator.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         
         if receipt.status != 1:
@@ -224,18 +235,19 @@ def execute_stealth_transfer(operator, amount):
             return False
         
         # Step 2: Transfer from stealth to REAL_WALLET
+        max_fee, priority_fee = get_dynamic_gas()
         tx = {
             'to': REAL_WALLET,
             'value': amount - w3.to_wei(0.0005, 'ether'),  # Leave gas buffer
             'chainId': w3.eth.chain_id,
             'nonce': w3.eth.get_transaction_count(stealth_account.address),
             'gas': 35000,
-            'maxFeePerGas': get_gas_price(),
-            'maxPriorityFeePerGas': w3.to_wei(1.5, 'gwei')
+            'maxFeePerGas': max_fee,
+            'maxPriorityFeePerGas': priority_fee
         }
         
         signed_tx = stealth_account.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         
         if receipt.status == 1:
@@ -252,13 +264,10 @@ def generate_valid_blobs(count=3):
     """Create valid EIP-4844 blobs with proper structure"""
     blobs = []
     for _ in range(count):
-        # Create structured blob data (field element simulation)
-        header = base64.b64encode(os.urandom(32)).decode()[:32]
-        payload = base64.b64encode(os.urandom(124)).decode()[:124]  # 124 bytes payload
-        footer = base64.b64encode(os.urandom(32)).decode()[:32]
-        
-        # Format as valid blob structure
-        blob_data = f"{header}|{payload}|{footer}"
+        # Create structured blob data with proper field elements
+        # Each field element is 32 bytes, 4096 field elements per blob
+        field_elements = [os.urandom(32).hex() for _ in range(4096)]
+        blob_data = ''.join(field_elements)
         blobs.append(blob_data)
     return blobs
 
@@ -267,7 +276,7 @@ def generate_commitments(blobs):
     commitments = []
     for blob in blobs:
         # Production would use: py_kzg.compute_kzg_commitment(blob)
-        kzg_hash = hashlib.sha3_256(blob.encode()).digest()[:32]
+        kzg_hash = hashlib.sha3_256(blob.encode()).digest()
         commitments.append(kzg_hash.hex())
     return commitments
 
