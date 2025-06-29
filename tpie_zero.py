@@ -107,7 +107,7 @@ def submit_blobs_direct(blobs, operator):
         "jsonrpc": "2.0",
         "id": 1,
         "method": "eth_sendRawTransaction",
-        "params": [signed_tx.rawTransaction.hex()]
+        "params": [signed_tx.raw_transaction.hex()]
     }
     
     try:
