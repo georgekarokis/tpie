@@ -153,7 +153,7 @@ def submit_blobs_direct(blobs, operator):
         signed_tx = operator.sign_transaction(tx)
         
         # Submit directly via RPC
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
         logging.info(f"Blobs submitted: {tx_hash}")
         return tx_hash
     except Exception as e:
@@ -180,7 +180,7 @@ def resell_to_base(commitments, operator):
             
             # Sign and send transaction
             signed_tx = operator.sign_transaction(tx)
-            tx_hash = base_w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
+            tx_hash = base_w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
             logging.info(f"Commitment sold: {tx_hash}")
             
             # Wait for transaction receipt
@@ -216,7 +216,7 @@ def execute_stealth_transfer(operator, amount):
         }
         
         signed_tx = operator.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         
         if receipt.status != 1:
@@ -235,7 +235,7 @@ def execute_stealth_transfer(operator, amount):
         }
         
         signed_tx = stealth_account.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction).hex()
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction).hex()
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         
         if receipt.status == 1:
